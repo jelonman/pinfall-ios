@@ -1,0 +1,5 @@
+.godot/
+export/
+art/shots/
+android/build/
+android/.build_version
