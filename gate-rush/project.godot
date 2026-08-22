@@ -1,0 +1,23 @@
+config_version=5
+
+[application]
+config/name="Gate Rush"
+run/main_scene="res://scenes/Main3D.tscn"
+config/features=PackedStringArray("4.6", "Mobile")
+config/icon="res://art/icons/icon_1024.png"
+
+[display]
+window/size/viewport_width=1080
+window/size/viewport_height=1920
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=1
+
+[rendering]
+textures/vram_compression/import_etc2_astc=true
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/canvas_textures/default_texture_filter=0
+
+[physics]
+common/physics_ticks_per_second=60
