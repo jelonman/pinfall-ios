@@ -31,13 +31,82 @@ var _save: Node
 var _pins_pulled := 0
 var _spilled_any := false
 
-## Levels are DATA. gates = (height, x of the hole); goal_x = which side the crucible sits on;
-## needed = drops required. Adding a level is a row here, not a scene file.
-const LEVELS := [
-	{"gates": [[3.60, -0.85], [2.10, 0.95], [0.70, -0.10]], "goal_x": -1.65, "needed": 45},
-	{"gates": [[3.90, 1.20], [2.60, -1.25], [1.35, 1.05], [0.15, -0.15]], "goal_x": 1.65, "needed": 55},
-	{"gates": [[4.00, 0.00], [2.55, -1.55], [1.60, 1.55], [0.45, 0.00]], "goal_x": -1.65, "needed": 60},
-]
+## Levels are DATA, and there are 60 of them plus an endless curve after that.
+##
+## Owner, 2026-08-22: the shipped games were "very bones... the levels are short". Three levels
+## is a demo. The curve below is generated from the index rather than hand-typed, so a level is
+## a formula and the whole ladder can be re-measured in one run.
+##
+## gates = (height, x of the hole); goal_x = which side the crucible sits on; needed = drops
+## required to win. NEEDED is MEASURED, not guessed — tools/levelsim.gd plays every level with a
+## perfect top-to-bottom pull and records what actually lands in the crucible; the table below is
+## 72% of that, so a clean solve wins and a sloppy one does not. Regenerate it with:
+##     godot --headless --path . --script tools/levelsim.gd
+const CHAMBER_HALF := 1.55       ## the usable half-width between the side walls
+const DROPS_TOTAL := 140
+
+## Measured ceilings x a share that tightens from 68% to 82% as the ladder climbs.
+## Raw measured catch, 2026-08-22 (tools/levelsim.gd, perfect top-to-bottom solve):
+## 42 43 43 44 44 45 45 46 46 47 47 48 48 49 49 50 50 51 51 52 52 53 53 54 55 55 56 56 57 57 58 58 59 59 60 60 61 61 62 62 47 40 42 42 38 41 42 36 41 45 34 38 33 42 45 39 36 46 45 30 Filled by tools/levelsim.gd; a 0 means "not measured yet"
+## and falls back to the formula, so the game is never unplayable while the table is being rebuilt.
+const NEEDED := [28, 29, 29, 30, 30, 31, 31, 32, 32, 32, 33, 33, 34, 34, 34, 35, 35, 36, 36, 37, 37, 38, 38, 39, 40, 40, 41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46, 47, 47, 36, 31, 32, 32, 29, 32, 33, 28, 32, 35, 27, 30, 26, 33, 36, 31, 29, 37, 36, 24]
+
+static var LEVELS: Array = _build_levels()
+
+
+static func _build_levels() -> Array:
+	var out: Array = []
+	for n in 60:
+		out.append(_make_level(n))
+	return out
+
+
+static func _make_level(n: int) -> Dictionary:
+	## Four bands of shelf count, so the shape of a level changes visibly as the player climbs
+	## rather than only its numbers. Within a band the holes drift outward and the shelves pack
+	## closer, which is what actually makes a pour harder: less room to correct between gates.
+	var rows := 3
+	if n >= 8: rows = 4
+	if n >= 22: rows = 5
+	if n >= 40: rows = 6
+	# ⛔ SIX SHELVES DID NOT FIT IN THE OLD RANGE. Holding the top at 4.05 put 6 shelves 0.74
+	# apart; with 0.30 of thickness and a 6 degree tilt the raised ends met the shelf above and
+	# sealed the chamber. Measured: levels 0-39 caught 42 to 62 drops on a clean rising curve,
+	# and every level from 40 on caught 0 to 6. The top of the stack now rises with the shelf
+	# count so the gap never falls below about 0.95.
+	var bottom := 0.35
+	var top: float = bottom + 0.97 * float(rows - 1)
+	var gates: Array = []
+	for i in rows:
+		var t: float = float(i) / float(max(rows - 1, 1))
+		var y: float = top - (top - bottom) * t
+		# Alternate the hole side every shelf, and push it further out as the ladder climbs, so
+		# the stream has to be walked across the chamber instead of dropping straight through.
+		var side := 1.0 if (i + n) % 2 == 0 else -1.0
+		var reach: float = 0.35 + 0.75 * clampf(float(n) / 45.0, 0.0, 1.0)
+		var wobble: float = 0.22 * sin(float(n) * 1.7 + float(i) * 2.3)
+		var hole: float = clampf(side * CHAMBER_HALF * reach + wobble, -1.58, 1.58)
+		gates.append([snappedf(y, 0.01), snappedf(hole, 0.01)])
+	var goal_x := -1.65 if n % 2 == 0 else 1.65
+	# ⛔ WINNABILITY IS BUILT IN, NOT HOPED FOR. The ridge peaks near x=0.2 and each side falls
+	# away to its own vessel, so a level whose LAST hole sits on the wrong side of that peak
+	# cannot deliver a single drop to the crucible no matter how well it is played — measured:
+	# generated levels 1 and 2 caught 0 of 140 before this line existed. The bottom hole is
+	# therefore always on the goal's side; the difficulty lives in the shelves above it, which
+	# decide how much of the pour is still travelling when it gets there.
+	var last: Array = gates[gates.size() - 1]
+	last[1] = snappedf(goal_x * (0.45 + 0.18 * sin(float(n) * 2.1)), 0.01)
+	return {"gates": gates, "goal_x": goal_x, "needed": _needed_for(n)}
+
+
+static func _needed_for(n: int) -> int:
+	## The measured table wins whenever it has a row for this level.
+	if n < NEEDED.size() and int(NEEDED[n]) > 0:
+		return NEEDED[n]
+	# Fallback while the table is being rebuilt: a share of the pour that grows with the ladder.
+	return int(round(DROPS_TOTAL * (0.30 + 0.22 * clampf(float(n) / 59.0, 0.0, 1.0))))
+
+
 var level_index := 0
 
 
@@ -257,10 +326,20 @@ func _build_chamber() -> void:
 	_slab(Vector3(0.5, 8.2, 3.6), Vector3(3.05, 1.9, 0.55), wall)
 	# The funnel that gives the fluid somewhere to go, and the puzzle its shape.
 	var accent := Look.toon(Color(0.30, 0.50, 0.68), 0.35)
-	var left := _slab(Vector3(2.6, 0.35, 1.5), Vector3(-1.35, -0.75, 0.55), accent)
-	left.rotation_degrees = Vector3(0, 0, -17)
-	var right := _slab(Vector3(2.6, 0.35, 1.5), Vector3(1.35, -0.75, 0.55), accent)
-	right.rotation_degrees = Vector3(0, 0, 17)
+	# ⛔ THIS WAS A V AND THE GAME COULD NOT BE WON. Both slabs sloped DOWN toward the centre and
+	# spanned x -2.59..-0.11 and 0.11..2.59, which put a solid roof over both vessel mouths
+	# (the crucible opening is x -2.50..-0.80, top at y=-1.20). tools/levelsim.gd plays a level
+	# with a perfect top-to-bottom pull and counts what lands: 0 of 140 for every one of the three
+	# shipped levels, and 0 drops even reached y=-1.2. Molten came to rest at y=-0.86, sitting on
+	# the funnel, and the crucible could never fill. Build 1 shipped like this on 2026-08-02.
+	#
+	# It is now a RIDGE, not a funnel: the peak is at the centre and each slab falls away toward
+	# its own vessel, so where the stream crosses the ridge decides which one it fills. That is
+	# also the choice the level is supposed to be asking for.
+	var left := _slab(Vector3(2.2, 0.35, 1.5), Vector3(-0.85, -0.75, 0.55), accent)
+	left.rotation_degrees = Vector3(0, 0, 17)
+	var right := _slab(Vector3(2.2, 0.35, 1.5), Vector3(0.85, -0.75, 0.55), accent)
+	right.rotation_degrees = Vector3(0, 0, -17)
 
 
 func _build_pins() -> void:
@@ -278,7 +357,11 @@ func _build_pins() -> void:
 	for g in LEVELS[level_index]["gates"]:
 		gates.append({"y": float(g[0]), "hole": float(g[1])})
 	const HALF := 2.80          # inner half-width of the chamber
-	const HOLE := 0.62          # hole width; must exceed the pin diameter or it never clears
+	# ⛔ 0.62 JAMMED. 140 spheres of radius 0.115 arch over any orifice narrower than about five
+	# ball diameters, so a 0.62 hole (2.7 diameters) stopped the pour dead: tools/flowprobe.gd
+	# measured 6 of 140 drops through in the first 2.5 s and then nothing at all for the next
+	# 27.5 s. 1.30 is 5.6 diameters and drains. The pin is 1.9 long, so it still plugs the hole.
+	const HOLE := 1.30          # hole width; must exceed the pin diameter or it never clears
 	const THICK := 0.30
 
 	for i in gates.size():
@@ -287,12 +370,21 @@ func _build_pins() -> void:
 		var hx: float = g["hole"]
 		var left_w: float = (hx - HOLE * 0.5) + HALF
 		var right_w: float = HALF - (hx + HOLE * 0.5)
+		# ⛔ FLAT SHELVES STOP THE POUR. Molten that lands away from the hole simply rests there:
+		# tools/flowprobe.gd on level 8 measured the whole pour parked at y=0.61, on top of the
+		# lowest shelf, for 30 s with not one drop through — and every generated level with 4 or
+		# more shelves caught 0 of 140 for the same reason. Each half now slopes 6 degrees TOWARD
+		# the hole, so a shelf gathers what lands on it instead of holding it. The puzzle is
+		# unchanged: which hole, and in which order.
+		const TILT := 6.0
 		if left_w > 0.05:
-			_slab(Vector3(left_w, THICK, 1.5),
+			var ls := _slab(Vector3(left_w, THICK, 1.5),
 				Vector3(-HALF + left_w * 0.5, y, 0.55), shelf)
+			ls.rotation_degrees = Vector3(0, 0, -TILT)
 		if right_w > 0.05:
-			_slab(Vector3(right_w, THICK, 1.5),
+			var rs := _slab(Vector3(right_w, THICK, 1.5),
 				Vector3(HALF - right_w * 0.5, y, 0.55), shelf)
+			rs.rotation_degrees = Vector3(0, 0, TILT)
 		var pin := preload("res://scripts/pin.gd").new()
 		pin.setup(Vector3(hx, y, 0.55), 1.9, mat, i)
 		pin.pulled_out.connect(_on_pin_out)
