@@ -76,7 +76,7 @@ func _layout() -> void:
 	var top := vp.y * 0.17
 	# The win card occupies the bottom 23% of the screen; the board has to end above it or the
 	# message covers the peg the player just placed. Measured against a captured solve, not guessed.
-	var bottom := vp.y * 0.28
+	var bottom := vp.y * 0.20
 	field = Rect2(Vector2(m, top), Vector2(vp.x - m * 2.0, vp.y - top - bottom))
 
 
@@ -278,12 +278,12 @@ func _draw_hud(vp: Vector2) -> void:
 		# ⛔ The banner sat across the middle of the board and covered a peg, so the thing the
 		# player just solved was hidden by the message saying they had solved it. It is a card
 		# at the bottom now, and the stars are drawn rather than typed as asterisks.
-		var h := vp.y * 0.19
+		var h := vp.y * 0.155
 		var card := Rect2(Vector2(vp.x * 0.06, vp.y - h - vp.y * 0.04),
 			Vector2(vp.x * 0.88, h))
 		draw_rect(card.grow(6.0), Color(CLEAR.r, CLEAR.g, CLEAR.b, 0.10))
 		draw_rect(card, Color(0.05, 0.08, 0.13, 0.94))
-		draw_string(hud_font, Vector2(card.position.x, card.position.y + h * 0.36),
+		draw_string(hud_font, Vector2(card.position.x, card.position.y + h * 0.38),
 			"Untangled!", HORIZONTAL_ALIGNMENT_CENTER, card.size.x, 66, CLEAR)
 		var sx: float = card.position.x + card.size.x * 0.5 - 54.0
 		for i in 3:
