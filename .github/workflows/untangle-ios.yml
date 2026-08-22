@@ -1,0 +1,213 @@
+name: build sign and upload Untangle iOS
+
+# Why this repo exists: Godot exports an iOS Xcode project from Linux, but only macOS can
+# compile and sign one, and there is no Mac on the box. GitHub's macOS runners are free on a
+# PUBLIC repo, which is why this is public — the same reason jelonman/ios-games is.
+#
+# ⛔ The 2026-08-21 App Review rejection (guideline 2.1(a), "not responding to tapping") was
+# NOT a code bug at the time of review. It was a stale binary: build 1 was uploaded
+# 2026-08-02T01:20, and the fix for taps being eaten by the invisible front pane landed
+# 2026-08-08 (commit 41eafa58). Nothing rebuilt it. This workflow is the missing rebuild lane.
+#
+# ⛔ The preset also shipped targeted_device_family=1, which in Godot's enum
+# ("iPhone,iPad,iPhone & iPad") means iPAD ONLY — which is why Apple reviewed a portrait phone
+# game on an iPad Air 11-inch. It is now 0 (iPhone).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'marketing version'
+        required: false
+        default: '1.1'
+      build:
+        description: 'build number (must be higher than every build already uploaded)'
+        required: false
+        default: '21'
+      upload:
+        description: 'upload to App Store Connect (false = build only)'
+        required: false
+        default: 'true'
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pick the newest Xcode
+        run: |
+          set -euo pipefail
+          # ⛔ Apple refuses any upload built with an old SDK: iOS 26 SDK or later is required.
+          # Never rely on the image default; take the highest version present.
+          ls -d /Applications/Xcode*.app
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: install Godot and the iOS export templates
+        run: |
+          set -euo pipefail
+          V=4.6.3-stable
+          curl -sSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_macos.universal.zip"
+          curl -sSL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_export_templates.tpz"
+          unzip -q godot.zip
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates"
+          unzip -q templates.tpz -d /tmp/tpl
+          mv /tmp/tpl/templates "$HOME/Library/Application Support/Godot/export_templates/${V/-/.}"
+          # An .app fetched with curl carries com.apple.quarantine and macOS stalls its first
+          # launch instead of refusing it — a 32-minute silent hang, measured on 2026-08-01.
+          xattr -dr com.apple.quarantine Godot.app || true
+          chmod +x Godot.app/Contents/MacOS/Godot
+          ./Godot.app/Contents/MacOS/Godot --version
+          test -f untangle/project.godot
+
+      - name: import assets
+        run: |
+          set -euo pipefail
+          # --headless --quit does NOT import; without a real --import every material falls back
+          # to untextured white. Every Godot call is bounded: `timeout` is GNU coreutils and is
+          # not on a stock macOS runner, and a Godot that hits a prompt with no tty waits forever.
+          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!; wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
+          LIMIT=420
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path untangle --import > import.log 2>&1 || true
+          tail -25 import.log
+          test -d untangle/.godot/imported
+
+      - name: export the Xcode project (release)
+        run: |
+          set -euo pipefail
+          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!; wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
+          LIMIT=900
+          mkdir -p untangle/export
+          cat untangle/export_presets.cfg
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path untangle --export-release "iOS" export/Untangle.ipa > export.log 2>&1 || true
+          cat export.log
+          ls -la untangle/export
+          # ⛔ An aborted Godot export STILL writes a pbxproj, with its $placeholders raw, and
+          # Xcode then says only "the project is damaged". Fail here instead of there.
+          if grep -q '\$pbx_embeded_frameworks\|\$additional_pbx' untangle/export/Untangle.xcodeproj/project.pbxproj; then
+            echo "UNSUBSTITUTED PLACEHOLDER IN pbxproj — the export aborted"; exit 1
+          fi
+          test -d untangle/export/Untangle.xcodeproj
+
+      - name: set version and build number
+        run: |
+          set -euo pipefail
+          VER="${{ github.event.inputs.version }}"; [ -z "$VER" ] && VER=1.0
+          BLD="${{ github.event.inputs.build }}"; [ -z "$BLD" ] && BLD=2
+          PLIST=$(find untangle/export -name '*-Info.plist' -maxdepth 3 | head -1)
+          echo "plist: $PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BLD" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" "$PLIST" || true
+          # iPhone-only: an iPad-portrait-only universal app is refused at upload.
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations~ipad" "$PLIST" || true
+
+      - name: place the App Store Connect key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/private_keys ~/.appstoreconnect/private_keys
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          cp ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 ~/.appstoreconnect/private_keys/
+          test -s ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+      - name: import the signing certificate and profile
+        env:
+          P12: ${{ secrets.SIGNING_P12 }}
+          P12_PASS: ${{ secrets.SIGNING_P12_PASSWORD }}
+          PROFILE: ${{ secrets.PROFILE_UNTANGLE_GODOT }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN=build.keychain
+          security create-keychain -p "$P12_PASS" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$P12_PASS" "$KEYCHAIN"
+          security set-keychain-settings -t 3600 -l "$KEYCHAIN"
+          printf '%s' "$P12" | base64 --decode > /tmp/dist.p12
+          security import /tmp/dist.p12 -k "$KEYCHAIN" -P "$P12_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          # without this codesign pops a GUI password prompt and the job hangs to its timeout
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$P12_PASS" "$KEYCHAIN"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          printf '%s' "$PROFILE" | base64 --decode > /tmp/app.mobileprovision
+          UUID=$(security cms -D -i /tmp/app.mobileprovision | plutil -extract UUID raw -o - -)
+          NAME=$(security cms -D -i /tmp/app.mobileprovision | plutil -extract Name raw -o - -)
+          cp /tmp/app.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
+          echo "PROFILE_UUID=$UUID" >> "$GITHUB_ENV"
+          echo "PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "installed profile $NAME ($UUID)"
+
+      - name: archive
+        working-directory: untangle/export
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ls -la
+          xcodebuild -project Untangle.xcodeproj -scheme Untangle \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/Untangle.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            TARGETED_DEVICE_FAMILY=1 \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            archive
+          ls -la "$PWD/build/Untangle.xcarchive/Products/Applications"
+
+      - name: export ipa
+        working-directory: untangle/export
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # ⛔ NO HEREDOCS: a heredoc body must sit at column 0, and column 0 ends the YAML block.
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict>' \
+            '<key>method</key><string>app-store-connect</string>' \
+            "<key>teamID</key><string>${TEAM_ID}</string>" \
+            '<key>uploadSymbols</key><true/>' \
+            '<key>signingStyle</key><string>manual</string>' \
+            '<key>signingCertificate</key><string>iPhone Distribution</string>' \
+            '<key>provisioningProfiles</key><dict>' \
+            "<key>com.piotraiventures.gaterush</key><string>${PROFILE_NAME}</string>" \
+            '</dict>' \
+            '<key>destination</key><string>export</string>' \
+            '</dict></plist>' > exportOptions.plist
+          plutil -lint exportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath "$PWD/build/Untangle.xcarchive" \
+            -exportPath "$PWD/build/ipa" \
+            -exportOptionsPlist exportOptions.plist
+          ls -la "$PWD/build/ipa"
+
+      - name: upload to App Store Connect
+        if: github.event.inputs.upload != 'false'
+        working-directory: untangle/export
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/ipa/*.ipa | head -1)
+          echo "uploading $IPA"
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log
+          grep -qiE "UPLOAD SUCCEEDED|No errors uploading" upload.log
+
+      - name: keep the ipa either way
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: untangle-ipa
+          path: untangle/export/build/ipa/*.ipa
+          if-no-files-found: warn
