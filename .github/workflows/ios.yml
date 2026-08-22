@@ -202,7 +202,7 @@ jobs:
           IPA=$(ls build/ipa/*.ipa | head -1)
           echo "uploading $IPA"
           xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log
-          grep -qi "No errors uploading" upload.log
+          grep -qiE "UPLOAD SUCCEEDED|No errors uploading" upload.log
 
       - name: keep the ipa either way
         if: always()
