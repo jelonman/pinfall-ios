@@ -42,6 +42,26 @@ func _ready() -> void:
 	_build(level)
 	set_process(true)
 	set_process_input(true)
+	# Capture hook. Xvfb has no window manager, so no keystroke ever reaches this window and an
+	# input-driven capture cannot be scripted there; this runs the real solve path on a timer
+	# instead. Gated on an env var that no shipped build sets.
+	if OS.has_environment("UNTANGLE_AUTOSOLVE"):
+		var t := Timer.new()
+		t.wait_time = float(OS.get_environment("UNTANGLE_AUTOSOLVE"))
+		t.one_shot = true
+		t.timeout.connect(_autosolve)
+		add_child(t)
+		t.start()
+
+
+func _autosolve() -> void:
+	for i in pos.size():
+		pos[i] = _norm_to_screen(solved_norm[i])
+	moves += 1
+	_recount()
+	if hot.is_empty():
+		_win()
+	queue_redraw()
 
 
 func _norm_to_screen(p: Vector2) -> Vector2:
@@ -54,7 +74,9 @@ func _layout() -> void:
 	# player cannot reach, and this genre is all reach.
 	var m := vp.x * 0.13
 	var top := vp.y * 0.17
-	var bottom := vp.y * 0.12
+	# The win card occupies the bottom 23% of the screen; the board has to end above it or the
+	# message covers the peg the player just placed. Measured against a captured solve, not guessed.
+	var bottom := vp.y * 0.28
 	field = Rect2(Vector2(m, top), Vector2(vp.x - m * 2.0, vp.y - top - bottom))
 
 
@@ -96,6 +118,19 @@ func _recount() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	# Playtest/capture hook, gated on the same env var as the SOLUTION print: press S to place
+	# every peg at its solved point and run the real win path. It calls nothing the player cannot
+	# reach by dragging, and it does not exist in a normal launch.
+	if OS.has_environment("UNTANGLE_SOLUTION") and event is InputEventKey and event.pressed \
+		and event.keycode == KEY_S and not won:
+		for i in pos.size():
+			pos[i] = _norm_to_screen(solved_norm[i])
+		moves += 1
+		_recount()
+		if hot.is_empty():
+			_win()
+		queue_redraw()
+		return
 	if won:
 		if (event is InputEventScreenTouch and event.pressed) \
 			or (event is InputEventMouseButton and event.pressed):
