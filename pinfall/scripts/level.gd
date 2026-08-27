@@ -367,9 +367,18 @@ func _build_environment() -> void:
 	var cam := Camera3D.new()
 	# The silos sit at y 4.6-7.0 now, so the camera has to hold roughly 10 m of chamber instead of
 	# 6. Raised and pulled back until both the silo gates and the crucible read in one frame.
-	cam.position = Vector3(0, 2.05, 12.9)
+	# With the width locked, fov 50 is the HORIZONTAL angle, so the distance has to be set from the
+	# chamber's 6.4 m width rather than from its height: 3.6 / tan(25 deg) puts the walls just
+	# inside the frame edges. At the old 12.9 the chamber filled a third of a tall phone screen.
+	cam.position = Vector3(0, 2.05, 8.40)
 	cam.rotation_degrees = Vector3(-2, 0, 0)
 	cam.fov = 50.0
+	# ⛔ KEEP THE WIDTH, NOT THE HEIGHT. A Camera3D defaults to holding vertical FOV, so on a phone
+	# narrower than the 1080x1920 design — an iPhone 17 Pro Max is 1320x2868, ratio 0.46 against
+	# 0.5625 — the chamber is CROPPED sideways and both outer silos run off the screen. Captured
+	# at 1290x2796 and looked at, which is the only way this shows up. Holding the width means a
+	# taller phone simply sees more chamber.
+	cam.keep_aspect = Camera3D.KEEP_WIDTH
 	add_child(cam)
 	_juice = preload("res://scripts/juice.gd").new()
 	add_child(_juice)

@@ -41,6 +41,13 @@ func _ready() -> void:
 	_recipe = _label(21, Color(1, 1, 1, 0.42), Vector2(0, 152), HORIZONTAL_ALIGNMENT_CENTER)
 	# The diverter reads at the BOTTOM, beside the thing it controls, not up with the order.
 	_diverter = _label(30, Color(0.62, 0.70, 0.85, 0.9), Vector2(0, 1750), HORIZONTAL_ALIGNMENT_CENTER)
+	# ⛔ ANCHOR IT TO THE BOTTOM, NOT TO 1750 PIXELS. The design height is 1920 but the stretched
+	# viewport is taller on a modern phone, so a fixed offset landed the diverter line in the
+	# middle of the chamber, across the crucible. Captured at 1290x2796 and looked at.
+	_diverter.anchor_top = 1.0
+	_diverter.anchor_bottom = 1.0
+	_diverter.offset_top = -110
+	_diverter.offset_bottom = -40
 
 
 func _label(size: int, colour: Color, offset: Vector2, align: int) -> Label:
