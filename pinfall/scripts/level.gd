@@ -621,7 +621,9 @@ func _build_hero() -> void:
 	var lvl: Dictionary = LEVELS[level_index]
 	var gx: float = lvl["goal_x"]
 	var root := Node3D.new()
-	root.position = Vector3(gx, -1.95, 0.95)
+	# Sunk lower into the crucible: at -1.95 his head cleared the rim, so when the diverter swings
+	# toward the crucible the chute crosses his face and reads as though it is crushing him.
+	root.position = Vector3(gx, -2.20, 0.95)
 	add_child(root)
 
 	var cloth := Look.toon(Look.HERO_CLOTH, 0.7)
