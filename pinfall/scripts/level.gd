@@ -181,6 +181,20 @@ func _ready() -> void:
 	_hud.set_diverter(_diverter_left, goal_x_of(level_index) < 0.0)
 
 
+func _input(event: InputEvent) -> void:
+	if OS.has_environment("PINFALL_TAPDEBUG") and event is InputEventMouseButton and event.pressed:
+		var cam := get_viewport().get_camera_3d()
+		print("CLICK at ", event.position, " picking=", get_viewport().physics_object_picking,
+			" cam=", cam)
+		if cam != null:
+			var from: Vector3 = cam.project_ray_origin(event.position)
+			var to: Vector3 = from + cam.project_ray_normal(event.position) * 100.0
+			var q := PhysicsRayQueryParameters3D.create(from, to)
+			q.collide_with_areas = true
+			var hit := get_world_3d().direct_space_state.intersect_ray(q)
+			print("   ray hits: ", hit.get("collider"), " at ", hit.get("position"))
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	## Tap anywhere after a verdict to move on. No menu, on purpose: the retry loop in this genre
 	## has to be faster than the impulse to close the app.
@@ -399,6 +413,12 @@ func _slab(size: Vector3, pos: Vector3, mat: StandardMaterial3D) -> StaticBody3D
 	shape.shape = col
 	body.add_child(shape)
 	body.position = pos
+	# ⛔ NOTHING BUILT BY _slab IS TAPPABLE. StaticBody3D is ray-pickable by default, so every
+	# shelf, wall, lip and the diverter plate itself sat in front of the Area3D that was supposed
+	# to receive the tap and swallowed it — the diverter readout never changed off "slag pit" no
+	# matter where it was clicked, which made the game's only control dead. This is the same fault
+	# the invisible front pane had; it is switched off at the source now rather than per object.
+	body.input_ray_pickable = false
 	add_child(body)
 	return body
 
@@ -471,10 +491,15 @@ func _set_diverter(tip_left: bool) -> void:
 
 
 func _on_diverter_tap(_cam: Node, event: InputEvent, _p: Vector3, _n: Vector3, _i: int) -> void:
+	if OS.has_environment("PINFALL_TAPDEBUG"):
+		print("DIVERTER AREA EVENT: ", event.get_class())
 	if _won or _lost:
 		return
-	if (event is InputEventScreenTouch and event.pressed) \
-		or (event is InputEventMouseButton and event.pressed):
+	# ⛔ ONE EVENT TYPE ONLY. With emulate_touch_from_mouse on, a single click arrives as BOTH an
+	# InputEventScreenTouch and an InputEventMouseButton, so a handler that accepts either flipped
+	# the diverter twice and left it exactly where it started — the game's only control looked
+	# dead. Touch is what the phone sends, and it is what the desktop emulates, so touch it is.
+	if event is InputEventScreenTouch and event.pressed:
 		_set_diverter(not _diverter_left)
 		_juice.kick(0.10)
 		if _hud != null and _hud.has_method("set_diverter"):
