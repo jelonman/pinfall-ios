@@ -19,7 +19,12 @@ const Look := preload("res://scripts/look.gd")
 ## ad games this is modelled on all use exactly this trick: enough small rigid bodies that the
 ## mass reads as a liquid when it pours. 140 is where it stops looking countable on a 1080p
 ## phone screen and before the 120 Hz physics tick starts costing frames.
-const DROPS := 140
+# ⛔ 140 DROPS DID NOT FIT IN A SILO. At 0.055 spacing a 70-drop column stood 3.85 m tall inside
+# a 1.6 m silo, so the top half of every silo was above its own divider and poured sideways into
+# its neighbour — measured as exactly 8 iron in the crucible on every level before the wanted
+# metal had finished, which is a contamination loss the player cannot prevent. 108 in a grid fits
+# under the dividers with room to spare.
+const DROPS := 108
 const DROP_RADIUS := 0.115
 
 var pins: Array[Node3D] = []
@@ -30,6 +35,10 @@ var _juice: Node
 var _save: Node
 var _pins_pulled := 0
 var _spilled_any := false
+var _diverter: StaticBody3D
+var _diverter_left := true
+var _goal: Node = null
+var silo_pins: Array = []
 
 ## Levels are DATA, and there are 60 of them plus an endless curve after that.
 ##
@@ -45,11 +54,30 @@ var _spilled_any := false
 const CHAMBER_HALF := 1.55       ## the usable half-width between the side walls
 const DROPS_TOTAL := 140
 
+## ⛔ REJECTED 4.3(a) AS SPAM ON 2026-08-25: "shares a similar binary, metadata, and/or concept as
+## apps submitted by other developers, with only minor differences". Every pull-the-pin game on
+## the store is the same sentence — get the liquid to the thing. So this one stopped being that.
+##
+## The chamber is now a FOUNDRY POUR. The molten in the shaft is not one liquid: it is layered,
+## copper at the bottom, iron above it, gold on top, and it drains from the bottom up — so the
+## order the metals arrive in is physics, not a menu. What the player controls is the DIVERTER
+## under the shaft: one tap swings it toward the crucible, another toward the slag pit. Each level
+## is an ORDER — so many of this metal, so many of that — and the wrong metal in the crucible
+## ruins the heat exactly as surely as too little of the right one.
+const METALS := [
+	{"name": "copper", "albedo": Color(0.95, 0.26, 0.05), "emit": Color(1.00, 0.18, 0.02)},
+	{"name": "iron",   "albedo": Color(0.55, 0.66, 0.86), "emit": Color(0.40, 0.60, 1.00)},
+	{"name": "gold",   "albedo": Color(1.00, 0.88, 0.24), "emit": Color(1.00, 0.82, 0.16)},
+]
+## How much of a metal may end up in the crucible before it counts as contamination. A single
+## splash off a shelf is not a spoiled heat; a stream is.
+const CONTAMINATION_ALLOWANCE := 7
+
 ## Measured ceilings x a share that tightens from 68% to 82% as the ladder climbs.
 ## Raw measured catch, 2026-08-22 (tools/levelsim.gd, perfect top-to-bottom solve):
 ## 42 43 43 44 44 45 45 46 46 47 47 48 48 49 49 50 50 51 51 52 52 53 53 54 55 55 56 56 57 57 58 58 59 59 60 60 61 61 62 62 47 40 42 42 38 41 42 36 41 45 34 38 33 42 45 39 36 46 45 30 Filled by tools/levelsim.gd; a 0 means "not measured yet"
 ## and falls back to the formula, so the game is never unplayable while the table is being rebuilt.
-const NEEDED := [28, 29, 29, 30, 30, 31, 31, 32, 32, 32, 33, 33, 34, 34, 34, 35, 35, 36, 36, 37, 37, 38, 38, 39, 40, 40, 41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46, 47, 47, 36, 31, 32, 32, 29, 32, 33, 28, 32, 35, 27, 30, 26, 33, 36, 31, 29, 37, 36, 24]
+const NEEDED := [7, 14, 6, 9, 13, 13, 8, 12, 6, 12, 8, 7, 5, 10, 8, 5, 3, 7, 10, 12, 8, 4, 9, 7, 4, 8, 8, 7, 4, 4, 4, 13, 8, 5, 6, 3, 5, 8, 7, 5, 5, 3, 5, 7, 5, 5, 6, 6, 6, 9, 6, 5, 6, 3, 6, 9, 10, 5, 4, 4]
 
 static var LEVELS: Array = _build_levels()
 
@@ -65,10 +93,18 @@ static func _make_level(n: int) -> Dictionary:
 	## Four bands of shelf count, so the shape of a level changes visibly as the player climbs
 	## rather than only its numbers. Within a band the holes drift outward and the shelves pack
 	## closer, which is what actually makes a pour harder: less room to correct between gates.
+	# ⛔ THE STACK IS CAPPED AT FOUR SHELVES NOW. The silos need the top of the chamber, and more
+	# than four shelves also destroyed the thing the silos exist for: measured, a layered pour
+	# through six shelves arrives at the diverter completely interleaved, so no amount of steering
+	# could keep one metal out of the crucible (copper 13, iron 8, every run a contamination
+	# loss). Difficulty above level 20 comes from the hole positions, not from more shelves.
+	# ⛔ THE FOURTH SHELF WAS A CLIFF, NOT A STEP. Measured across all 60 levels: the deliverable
+	# ceiling averages about 15 drops for levels 1-20 and then collapses to 0-8 from level 21,
+	# which is exactly where the stack went from three shelves to four. Eleven levels delivered
+	# nothing at all. Survival compounds, so a fourth shelf does not make a level harder, it makes
+	# it impossible. Three shelves everywhere; the ladder is the ORDER — one metal, then two, from
+	# two silos, then three.
 	var rows := 3
-	if n >= 8: rows = 4
-	if n >= 22: rows = 5
-	if n >= 40: rows = 6
 	# ⛔ SIX SHELVES DID NOT FIT IN THE OLD RANGE. Holding the top at 4.05 put 6 shelves 0.74
 	# apart; with 0.30 of thickness and a 6 degree tilt the raised ends met the shelf above and
 	# sealed the chamber. Measured: levels 0-39 caught 42 to 62 drops on a clean rising curve,
@@ -88,15 +124,27 @@ static func _make_level(n: int) -> Dictionary:
 		var hole: float = clampf(side * CHAMBER_HALF * reach + wobble, -1.58, 1.58)
 		gates.append([snappedf(y, 0.01), snappedf(hole, 0.01)])
 	var goal_x := -1.65 if n % 2 == 0 else 1.65
+	# Two metals to start with, three from level 10. The order asks for one of them early and two
+	# from level 18, which is the point the diverter has to be worked twice in one pour.
+	var metal_count := 2 if n < 10 else 3
+	var wants: Array = [0]
+	if n >= 18:
+		wants = [0, 2] if metal_count > 2 and n % 3 != 1 else [0, 1]
+	if n >= 30 and metal_count > 2 and n % 4 == 0:
+		wants = [1, 2]
 	# ⛔ WINNABILITY IS BUILT IN, NOT HOPED FOR. The ridge peaks near x=0.2 and each side falls
 	# away to its own vessel, so a level whose LAST hole sits on the wrong side of that peak
 	# cannot deliver a single drop to the crucible no matter how well it is played — measured:
 	# generated levels 1 and 2 caught 0 of 140 before this line existed. The bottom hole is
 	# therefore always on the goal's side; the difficulty lives in the shelves above it, which
 	# decide how much of the pour is still travelling when it gets there.
+	# ⛔ The bottom hole used to be bound to the goal's side, because the ridge under it was fixed
+	# and a stream on the wrong side could never be recovered. The diverter replaced the ridge, so
+	# the bottom hole now aims at the MIDDLE — the player decides the side, not the level.
 	var last: Array = gates[gates.size() - 1]
-	last[1] = snappedf(goal_x * (0.45 + 0.18 * sin(float(n) * 2.1)), 0.01)
-	return {"gates": gates, "goal_x": goal_x, "needed": _needed_for(n)}
+	last[1] = snappedf(0.24 * sin(float(n) * 2.1), 0.01)
+	return {"gates": gates, "goal_x": goal_x, "needed": _needed_for(n),
+		"metals": metal_count, "wants": wants}
 
 
 static func _needed_for(n: int) -> int:
@@ -119,13 +167,18 @@ func _ready() -> void:
 	_build_environment()
 	_build_chamber()
 	_build_pins()
+	_build_silos()
 	_build_vessels()
 	_build_hero()
 	_build_fluid()
 	_hud = preload("res://scripts/hud.gd").new()
 	add_child(_hud)
-	_hud.set_level(level_index + 1, int(LEVELS[level_index]["needed"]),
-		_save.stars, int(_save.best.get(level_index, 0)))
+	var names: Array = []
+	for m in METALS:
+		names.append(m["name"])
+	_hud.set_order(names, wants_of(level_index), per_metal_target(level_index),
+		level_index + 1, _save.stars, int(_save.best.get(level_index, 0)))
+	_hud.set_diverter(_diverter_left, goal_x_of(level_index) < 0.0)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -151,14 +204,56 @@ func _build_vessels() -> void:
 	var drain_mat := Look.toon(Color(0.16, 0.14, 0.18), 0.3)
 
 	var goal := preload("res://scripts/goal.gd").new()
-	goal.setup(Vector3(gx, -1.75, 0.55), Vector3(1.7, 1.1, 1.3), true, int(lvl["needed"]), goal_mat)
-	goal.filled.connect(_on_win)
+	# The total is no longer the win. `filled` is left unconnected on purpose: the crucible is
+	# judged on the RECIPE, and a crucible with the right total of the wrong metal is a failure,
+	# not a success.
+	goal.setup(Vector3(gx, -1.75, 0.55), Vector3(1.7, 1.1, 1.3), true, 99999, goal_mat)
+	goal.metal_in.connect(_on_metal_in)
 	add_child(goal)
+	_goal = goal
 
+	# ⛔ THE SLAG PIT IS NO LONGER A LOSS. Dumping the metals the order does not call for is now
+	# how the level is PLAYED — punishing it would make the diverter pointless. What ends a heat
+	# is the wrong metal reaching the crucible.
 	var drain := preload("res://scripts/goal.gd").new()
-	drain.setup(Vector3(-gx, -1.75, 0.55), Vector3(1.7, 1.1, 1.3), false, 0, drain_mat)
-	drain.spilled.connect(_on_lose)
+	drain.setup(Vector3(-gx, -1.75, 0.55), Vector3(1.7, 1.1, 1.3), false, 999999, drain_mat)
 	add_child(drain)
+
+
+func wants_of(n: int) -> Array:
+	return LEVELS[n].get("wants", [0])
+
+
+func per_metal_target(n: int) -> int:
+	## The level's measured ceiling, split across the metals the order asks for.
+	var w: Array = wants_of(n)
+	return maxi(6, int(round(float(LEVELS[n]["needed"]) / float(maxi(w.size(), 1)))))
+
+
+func _on_metal_in(metal: int, total: int) -> void:
+	if _won or _lost:
+		return
+	var w: Array = wants_of(level_index)
+	if not w.has(metal):
+		if total > CONTAMINATION_ALLOWANCE:
+			_spilled_any = true
+			_on_lose_reason("%s in the crucible. The heat is ruined." % METALS[metal]["name"])
+		return
+	var target := per_metal_target(level_index)
+	var counts: Dictionary = _goal.counts
+	for m in w:
+		if int(counts.get(m, 0)) < target:
+			if _hud != null and _hud.has_method("set_recipe_progress"):
+				_hud.set_recipe_progress(counts, w, target)
+			return
+	_on_win()
+
+
+func _on_lose_reason(reason: String) -> void:
+	if _won:
+		return
+	_lost = true
+	_hud.verdict(reason, false)
 
 
 func _on_pin_out(_i: int) -> void:
@@ -270,8 +365,10 @@ func _build_environment() -> void:
 	add_child(bounce)
 
 	var cam := Camera3D.new()
-	cam.position = Vector3(0, 1.55, 11.2)
-	cam.rotation_degrees = Vector3(-4, 0, 0)
+	# The silos sit at y 4.6-7.0 now, so the camera has to hold roughly 10 m of chamber instead of
+	# 6. Raised and pulled back until both the silo gates and the crucible read in one frame.
+	cam.position = Vector3(0, 2.05, 12.9)
+	cam.rotation_degrees = Vector3(-2, 0, 0)
 	cam.fov = 50.0
 	add_child(cam)
 	_juice = preload("res://scripts/juice.gd").new()
@@ -302,7 +399,7 @@ func _build_chamber() -> void:
 	var floor_mat := Look.toon(Look.STONE_DARK, 0.4)
 	# Back plate, floor, and two side walls. UV scale differs per surface so the tiling repeat
 	# never lines up across an edge, which is the tell that gives away a texture atlas.
-	_slab(Vector3(6.4, 8.2, 0.4), Vector3(0, 1.9, -0.2), wall)
+	_slab(Vector3(6.4, 9.4, 0.4), Vector3(0, 2.5, -0.2), wall)
 	# The invisible front pane. Without it the drops drift out of the pin plane and the level
 	# looks like it is working while nothing is actually being held back — which is exactly what
 	# the first render showed: molten pooled on the floor with every pin still in place.
@@ -316,14 +413,14 @@ func _build_chamber() -> void:
 	pane.input_ray_pickable = false
 	var pane_cs := CollisionShape3D.new()
 	var pane_shape := BoxShape3D.new()
-	pane_shape.size = Vector3(6.4, 8.2, 0.2)
+	pane_shape.size = Vector3(6.4, 9.4, 0.2)
 	pane_cs.shape = pane_shape
 	pane.add_child(pane_cs)
-	pane.position = Vector3(0, 1.9, 1.35)
+	pane.position = Vector3(0, 2.5, 1.35)
 	add_child(pane)
 	_slab(Vector3(6.4, 0.5, 3.6), Vector3(0, -2.55, 0.5), floor_mat)
-	_slab(Vector3(0.5, 8.2, 3.6), Vector3(-3.05, 1.9, 0.55), wall)
-	_slab(Vector3(0.5, 8.2, 3.6), Vector3(3.05, 1.9, 0.55), wall)
+	_slab(Vector3(0.5, 9.4, 3.6), Vector3(-3.05, 2.5, 0.55), wall)
+	_slab(Vector3(0.5, 9.4, 3.6), Vector3(3.05, 2.5, 0.55), wall)
 	# The funnel that gives the fluid somewhere to go, and the puzzle its shape.
 	var accent := Look.toon(Color(0.30, 0.50, 0.68), 0.35)
 	# ⛔ THIS WAS A V AND THE GAME COULD NOT BE WON. Both slabs sloped DOWN toward the centre and
@@ -336,10 +433,43 @@ func _build_chamber() -> void:
 	# It is now a RIDGE, not a funnel: the peak is at the centre and each slab falls away toward
 	# its own vessel, so where the stream crosses the ridge decides which one it fills. That is
 	# also the choice the level is supposed to be asking for.
-	var left := _slab(Vector3(2.2, 0.35, 1.5), Vector3(-0.85, -0.75, 0.55), accent)
-	left.rotation_degrees = Vector3(0, 0, 17)
-	var right := _slab(Vector3(2.2, 0.35, 1.5), Vector3(0.85, -0.75, 0.55), accent)
-	right.rotation_degrees = Vector3(0, 0, -17)
+	# THE DIVERTER. One plate under the shaft, and the only control in the game besides the pins.
+	# It starts pointing at the slag pit, because a level that starts pointing at the crucible
+	# would fill it with whatever came first and decide the heat before the player touched it.
+	# Long enough that each end sits over a vessel mouth. At 3.3 the plate stopped short of both
+	# and read as a loose slab floating in the middle of the chamber rather than as a chute.
+	_diverter = _slab(Vector3(3.9, 0.26, 1.5), Vector3(0.0, -0.72, 0.55), accent)
+	_set_diverter(goal_x_of(level_index) > 0.0)   # true = tipped left, i.e. away from the goal
+	var tap := Area3D.new()
+	var tcs := CollisionShape3D.new()
+	var tb := BoxShape3D.new()
+	tb.size = Vector3(4.2, 1.5, 1.6)
+	tcs.shape = tb
+	tap.add_child(tcs)
+	tap.position = Vector3(0.0, -0.72, 0.55)
+	tap.input_event.connect(_on_diverter_tap)
+	add_child(tap)
+
+
+func goal_x_of(n: int) -> float:
+	return float(LEVELS[n]["goal_x"])
+
+
+func _set_diverter(tip_left: bool) -> void:
+	## A tilted plate feeds the side its LOW end is on. Positive z rotation drops the +x end.
+	_diverter_left = tip_left
+	_diverter.rotation_degrees = Vector3(0, 0, 13.0 if tip_left else -13.0)
+
+
+func _on_diverter_tap(_cam: Node, event: InputEvent, _p: Vector3, _n: Vector3, _i: int) -> void:
+	if _won or _lost:
+		return
+	if (event is InputEventScreenTouch and event.pressed) \
+		or (event is InputEventMouseButton and event.pressed):
+		_set_diverter(not _diverter_left)
+		_juice.kick(0.10)
+		if _hud != null and _hud.has_method("set_diverter"):
+			_hud.set_diverter(_diverter_left, goal_x_of(level_index) < 0.0)
 
 
 func _build_pins() -> void:
@@ -361,7 +491,12 @@ func _build_pins() -> void:
 	# ball diameters, so a 0.62 hole (2.7 diameters) stopped the pour dead: tools/flowprobe.gd
 	# measured 6 of 140 drops through in the first 2.5 s and then nothing at all for the next
 	# 27.5 s. 1.30 is 5.6 diameters and drains. The pin is 1.9 long, so it still plugs the hole.
-	const HOLE := 1.30          # hole width; must exceed the pin diameter or it never clears
+	# ⛔ 1.30 DRAINED, BUT IT DID NOT DELIVER. Survival compounds across shelves, so a hole that
+	# passes some of the pour on one shelf passes almost none through four: the measured ceiling
+	# fell from 22 drops on level 1 to between 1 and 4 by level 30, which is not an order anybody
+	# can fill. 1.90, with a 2.5 pin to plug it, took level 30 from 3 to 23 and left the diverter
+	# just as decisive (the nailed-diverter run still loses).
+	const HOLE := 1.90          # hole width; must exceed the pin diameter or it never clears
 	const THICK := 0.30
 
 	for i in gates.size():
@@ -376,7 +511,7 @@ func _build_pins() -> void:
 		# more shelves caught 0 of 140 for the same reason. Each half now slopes 6 degrees TOWARD
 		# the hole, so a shelf gathers what lands on it instead of holding it. The puzzle is
 		# unchanged: which hole, and in which order.
-		const TILT := 6.0
+		const TILT := 18.0
 		if left_w > 0.05:
 			var ls := _slab(Vector3(left_w, THICK, 1.5),
 				Vector3(-HALF + left_w * 0.5, y, 0.55), shelf)
@@ -385,11 +520,65 @@ func _build_pins() -> void:
 			var rs := _slab(Vector3(right_w, THICK, 1.5),
 				Vector3(HALF - right_w * 0.5, y, 0.55), shelf)
 			rs.rotation_degrees = Vector3(0, 0, TILT)
+		_hole_lips(hx, y, HOLE, shelf)
 		var pin := preload("res://scripts/pin.gd").new()
-		pin.setup(Vector3(hx, y, 0.55), 1.9, mat, i)
+		pin.setup(Vector3(hx, y, 0.55), 2.5, mat, i)
 		pin.pulled_out.connect(_on_pin_out)
 		add_child(pin)
 		pins.append(pin)
+
+
+const SILO_HALF := 2.80        ## the chamber's inner half-width; the silos fill it
+const SILO_FLOOR_Y := 3.95
+# ⛔ THE DIVIDERS HAVE TO BE TALLER THAN THE CHARGE. At 5 columns a 54-drop grid stands 2.86 m,
+# starting at 4.87 — so with a 7.00 divider the top three rows began ABOVE it and spilled into the
+# neighbouring silo. Measured with the gate shut: 44 of 54 iron drops escaped anyway.
+const SILO_TOP_Y := 6.60
+
+
+func _hole_lips(x: float, y: float, width: float, mat: StandardMaterial3D) -> void:
+	## ⛔ A PIN PLUGS A CIRCLE; A HOLE IN A SHELF IS A RECTANGLE. The pin is a cylinder of radius
+	## 0.32 lying along x, so it seals z 0.23-0.87. The shelves and silo floors are 1.5 deep,
+	## z -0.20 to 1.30 — which leaves two open strips the charge simply falls through. Measured
+	## with tools/leakprobe.gd: with the iron gate CLOSED, 46 of 54 iron drops were below y=3
+	## within two seconds. These two lips close the part of the hole the pin was never covering.
+	const LIP := 0.43
+	_slab(Vector3(width, 0.26, LIP), Vector3(x, y, -0.20 + LIP * 0.5), mat)
+	_slab(Vector3(width, 0.26, LIP), Vector3(x, y, 1.30 - LIP * 0.5), mat)
+
+
+func _build_silos() -> void:
+	## One silo per metal, side by side, each with its own gate. This is the change that made the
+	## order mean anything: with all three metals stacked in ONE shaft they arrive mixed, and the
+	## player has nothing to aim. With a gate each, the player decides WHICH metal is falling, and
+	## the diverter decides where it goes. Two controls, and the level is the question of how to
+	## use them together.
+	var metal_n: int = int(LEVELS[level_index].get("metals", 2))
+	var wall := Look.toon(Look.STONE_DARK, 0.5)
+	var mat := Look.metal(Look.STEEL)
+	# ⛔ THE SILOS HAVE TO REACH THE CHAMBER WALLS. Built 3.7 m wide inside a 5.6 m chamber, they
+	# left a 0.95 m open strip down each side with no floor in it — and tools/crossprobe.gd found
+	# every escaping drop crossing the floor plane at x 2.02 to 2.52, which is exactly that strip.
+	# 45 of 54 iron left a shut silo by walking off its outer edge.
+	var span: float = (SILO_HALF * 2.0) / float(metal_n)
+	for m in metal_n:
+		var cx: float = -SILO_HALF + span * (float(m) + 0.5)
+		# Divider between silos, so a metal cannot drift sideways into its neighbour's gate.
+		if m > 0:
+			_slab(Vector3(0.16, SILO_TOP_Y - SILO_FLOOR_Y, 1.5),
+				Vector3(cx - span * 0.5, (SILO_FLOOR_Y + SILO_TOP_Y) * 0.5, 0.55), wall)
+		var hole := 1.05
+		var lw: float = (span - hole) * 0.5
+		if lw > 0.05:
+			_slab(Vector3(lw, 0.26, 1.5), Vector3(cx - span * 0.5 + lw * 0.5, SILO_FLOOR_Y, 0.55), wall)
+			_slab(Vector3(lw, 0.26, 1.5), Vector3(cx + span * 0.5 - lw * 0.5, SILO_FLOOR_Y, 0.55), wall)
+		_hole_lips(cx, SILO_FLOOR_Y, hole, wall)
+		var pin := preload("res://scripts/pin.gd").new()
+		pin.setup(Vector3(cx, SILO_FLOOR_Y, 0.55), 1.5, mat, 100 + m)
+		pin.pulled_out.connect(_on_pin_out)
+		add_child(pin)
+		pins.append(pin)
+		silo_pins.append(pin)
 
 
 func _build_hero() -> void:
@@ -439,14 +628,20 @@ func _build_hero() -> void:
 func _build_fluid() -> void:
 	## Emissive, heavy, slightly bouncy. Emission is what makes 140 spheres read as one molten
 	## mass under the glow pass instead of as 140 separate balls.
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Look.LAVA
-	mat.albedo_color = Color(1.0, 0.30, 0.10)
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.34, 0.06)
-	mat.emission_energy_multiplier = 1.15
-	mat.roughness = 0.45
-	mat.metallic = 0.0
+	# One material per metal. The shaft drains from the bottom, so the metal a drop is given is
+	# decided by where it starts in the stack: the deepest third is copper, then iron, then gold.
+	# That is what makes the arrival ORDER a physical fact the player can plan around.
+	var metal_n: int = int(LEVELS[level_index].get("metals", 2))
+	var mats: Array = []
+	for m in metal_n:
+		var mm := StandardMaterial3D.new()
+		mm.albedo_color = METALS[m]["albedo"]
+		mm.emission_enabled = true
+		mm.emission = METALS[m]["emit"]
+		mm.emission_energy_multiplier = 4.2
+		mm.roughness = 0.45
+		mm.metallic = 0.25 if m > 0 else 0.0
+		mats.append(mm)
 
 	var sphere := SphereMesh.new()
 	sphere.radius = DROP_RADIUS
@@ -468,15 +663,34 @@ func _build_fluid() -> void:
 		drop.mass = 0.22
 		drop.physics_material_override = phys
 		drop.continuous_cd = true          # at 0.085 radius and 14 m/s^2, drops tunnel without it
+		var metal: int = mini(int(float(i) / float(DROPS) * float(metal_n)), metal_n - 1)
+		# i ascends, so metal 0 fills first and each silo gets an equal share of the heat.
+		drop.set_meta("metal", metal)
 		var mi := MeshInstance3D.new()
 		mi.mesh = sphere
-		mi.material_override = mat
+		mi.material_override = mats[metal]
 		drop.add_child(mi)
 		var cs := CollisionShape3D.new()
 		cs.shape = shape
 		drop.add_child(cs)
+		var span: float = (SILO_HALF * 2.0) / float(metal_n)
+		var cx: float = -SILO_HALF + span * (float(metal) + 0.5)
+		var per: int = int(ceil(float(DROPS) / float(metal_n)))
+		var within: int = i % per
+		# A GRID, not a column. Height is what overflowed the dividers, so the charge is laid out
+		# across the silo's width first and only then upward.
+		var cols: int = maxi(3, int(floor((span - 0.30) / 0.26)))
+		var col: int = within % cols
+		var row: int = within / cols
 		drop.position = Vector3(
-			rng.randf_range(-0.75, 0.75),
-			5.4 + float(i) * 0.03,
-			0.55 + rng.randf_range(-0.25, 0.25))
+			cx - (span - 0.30) * 0.5 + float(col) * 0.26 + rng.randf_range(-0.02, 0.02),
+			# ⛔ Row 0 used to spawn at +0.32, which is exactly the top of the pin's 0.32 radius —
+			# so every drop in the bottom row started half inside the gate and Godot pushed it out
+			# THROUGH the plug. That, not the dividers, was the leak: 42 of 54 iron escaped a shut
+			# gate. Starting a clear radius above the plug removes it.
+			SILO_FLOOR_Y + 0.62 + float(row) * 0.26,
+			0.55 + rng.randf_range(-0.20, 0.20))
+		# i ascends with height, and the metal index ascends with i, so copper really is at the
+		# bottom of the shaft and gold really is on top. Colour alone would be a label; this is
+		# the level's actual timing.
 		add_child(drop)

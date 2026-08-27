@@ -9,9 +9,13 @@ extends Area3D
 
 signal filled
 signal spilled
+signal metal_in(metal: int, total: int)
 
 @export var is_goal := true
 var _count := 0
+## Per-metal tallies. The foundry order is a RECIPE, so the vessel has to know what is in it, not
+## just how full it is — 40 drops of the wrong alloy is a ruined heat, not a win.
+var counts := {}
 var _needed := 0
 var _fired := false
 
@@ -69,6 +73,9 @@ func _on_body(body: Node) -> void:
 	if _fired or not (body is RigidBody3D):
 		return
 	_count += 1
+	var m: int = int(body.get_meta("metal", 0))
+	counts[m] = int(counts.get(m, 0)) + 1
+	metal_in.emit(m, int(counts[m]))
 	if is_goal and _count >= _needed:
 		_fired = true
 		filled.emit()

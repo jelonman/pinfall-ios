@@ -17,7 +17,7 @@ func _ready() -> void:
 	# would use. A band costs one quad and makes the text survive any background under it.
 	var band := ColorRect.new()
 	band.anchor_right = 1.0
-	band.custom_minimum_size = Vector2(0, 140)
+	band.custom_minimum_size = Vector2(0, 200)
 	band.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var grad := Gradient.new()
 	grad.set_color(0, Color(0, 0, 0, 0.72))
@@ -31,13 +31,16 @@ func _ready() -> void:
 	var panel := Panel.new()
 	panel.add_theme_stylebox_override("panel", style)
 	panel.anchor_right = 1.0
-	panel.custom_minimum_size = Vector2(0, 140)
-	panel.offset_bottom = 140
+	panel.custom_minimum_size = Vector2(0, 200)
+	panel.offset_bottom = 200
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(panel)
-	_title = _label(28, Color(1, 1, 1, 0.92), Vector2(0, 54), HORIZONTAL_ALIGNMENT_CENTER)
-	_sub = _label(19, Color(1, 1, 1, 0.55), Vector2(0, 92), HORIZONTAL_ALIGNMENT_CENTER)
+	_title = _label(40, Color(1, 1, 1, 0.92), Vector2(0, 60), HORIZONTAL_ALIGNMENT_CENTER)
+	_sub = _label(27, Color(1, 1, 1, 0.55), Vector2(0, 112), HORIZONTAL_ALIGNMENT_CENTER)
 	_verdict = _label(44, Color(1, 0.86, 0.55, 0), Vector2(0, 520), HORIZONTAL_ALIGNMENT_CENTER)
+	_recipe = _label(21, Color(1, 1, 1, 0.42), Vector2(0, 152), HORIZONTAL_ALIGNMENT_CENTER)
+	# The diverter reads at the BOTTOM, beside the thing it controls, not up with the order.
+	_diverter = _label(30, Color(0.62, 0.70, 0.85, 0.9), Vector2(0, 1750), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _label(size: int, colour: Color, offset: Vector2, align: int) -> Label:
@@ -55,10 +58,51 @@ func _label(size: int, colour: Color, offset: Vector2, align: int) -> Label:
 	return l
 
 
+var _recipe: Label
+var _diverter: Label
+var _names: Array = []
+var _wants: Array = []
+var _target := 0
+var _tail := ""
+
+
+func set_order(names: Array, wants: Array, target: int, n: int, stars := 0, best := 0) -> void:
+	## The order IS the interface. A player who cannot read what the heat is supposed to contain
+	## has no reason to touch the diverter, and the diverter is the whole game.
+	_names = names
+	_wants = wants
+	_target = target
+	_title.text = "Order %d" % n
+	_tail = ""
+	if stars > 0:
+		_tail += "  ·  %d clean" % stars
+	if best > 0:
+		_tail += "  ·  best %d pins" % best
+	set_recipe_progress({}, wants, target)
+
+
+func set_recipe_progress(counts: Dictionary, wants: Array, target: int) -> void:
+	var parts: Array = []
+	for m in wants:
+		var have: int = int(counts.get(m, 0))
+		var nm: String = str(_names[m]) if m < _names.size() else str(m)
+		parts.append("%s %d/%d" % [nm, mini(have, target), target])
+	_sub.text = "Crucible needs " + "  +  ".join(parts) + _tail
+	if _recipe != null:
+		_recipe.text = "everything else goes in the slag pit"
+
+
+func set_diverter(tip_left: bool, goal_is_left: bool) -> void:
+	if _diverter == null:
+		return
+	var to_goal := tip_left == goal_is_left
+	_diverter.text = "diverter → crucible" if to_goal else "diverter → slag pit"
+	_diverter.add_theme_color_override("font_color",
+		Color(1, 0.86, 0.55, 0.95) if to_goal else Color(0.62, 0.70, 0.85, 0.9))
+
+
 func set_level(n: int, needed: int, stars := 0, best := 0) -> void:
 	_title.text = "Level %d" % n
-	# The returning player needs to see, in the first frame, that the app remembers them. A bare
-	# objective line reads identically on a first launch and a fiftieth.
 	var tail := ""
 	if stars > 0:
 		tail += "  ·  %d clean" % stars
